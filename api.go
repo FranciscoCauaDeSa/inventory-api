@@ -2,13 +2,14 @@ package main
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 )
 
 type API struct {
-	products *ProductStore
+	products ProductRepository
 }
 
 type ProductInput struct {
@@ -18,8 +19,27 @@ type ProductInput struct {
 	Stock       int64  `json:"stock"`
 }
 
-func (api *API) RegisterRoutes(*http.ServeMux) {
+func NewAPI(products ProductRepository) *API {
+	return &API{
+		products: products,
+	}
+}
 
+func (api *API) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /products", api.listProducts)
+	mux.HandleFunc("GET /products/{id}", api.getProduct)
+	mux.HandleFunc("POST /products", api.createProduct)
+	mux.HandleFunc("PUT /products/{id}", api.updateProduct)
+	mux.HandleFunc("DELETE /products/{id}", api.deleteProduct)
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "route not found")
+	})
+}
+
+func internalServerError(w http.ResponseWriter, operation string, err error) {
+	log.Printf("%s: %v", operation, err)
+	writeError(w, http.StatusInternalServerError, "internal server error")
 }
 
 func validateProductInput(input *ProductInput) string {
@@ -51,7 +71,11 @@ func parseProductID(r *http.Request) (int64, error) {
 }
 
 func (api *API) listProducts(w http.ResponseWriter, r *http.Request) {
-	products := api.products.List()
+	products, err := api.products.List(r.Context())
+	if err != nil {
+		internalServerError(w, "list products", err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, products)
 }
@@ -63,9 +87,14 @@ func (api *API) getProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	product, exists := api.products.Get(id)
-	if !exists {
-		writeError(w, http.StatusBadRequest, "product not found")
+	product, err := api.products.Get(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "product not found")
+		return
+	}
+
+	if err != nil {
+		internalServerError(w, "get product", err)
 		return
 	}
 
@@ -85,12 +114,17 @@ func (api *API) createProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	product := api.products.Create(Product{
+	product, err := api.products.Create(r.Context(), Product{
 		Name:        input.Name,
 		Description: input.Description,
 		PriceCents:  input.PriceCents,
 		Stock:       int64(input.Stock),
 	})
+
+	if err != nil {
+		internalServerError(w, "create product", err)
+		return
+	}
 
 	w.Header().Set("Location", "/products/"+strconv.FormatInt(product.ID, 10))
 
@@ -116,15 +150,20 @@ func (api *API) updateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	product, exists := api.products.Update(Product{
+	product, err := api.products.Update(r.Context(), id, Product{
 		Name:        input.Name,
 		Description: input.Description,
 		PriceCents:  input.PriceCents,
 		Stock:       input.Stock,
-	}, id)
+	})
 
-	if !exists {
+	if errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusNotFound, "product not found")
+		return
+	}
+
+	if err != nil {
+		internalServerError(w, "update product", err)
 		return
 	}
 
@@ -138,10 +177,15 @@ func (api *API) deleteProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deleted := api.products.Delete(id)
+	err = api.products.Delete(r.Context(), id)
 
-	if !deleted {
+	if errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusNotFound, "product not found")
+		return
+	}
+
+	if err != nil {
+		internalServerError(w, "delete product", err)
 		return
 	}
 
