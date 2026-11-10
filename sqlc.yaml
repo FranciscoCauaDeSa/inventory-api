@@ -1,0 +1,14 @@
+version: "2"
+
+sql:
+  - engine: postgresql
+    schema:
+      - "migrations/000001_create_products_table.up.sql"
+      - "migrations/000002_add_sku_to_products.up.sql"
+      - "migrations/000003_change_stock_to_bigint.up.sql"
+    queries: "db/query/"
+    gen:
+      go:
+        package: "db"
+        out: "db/sqlc"
+        sql_package: "pgx/v5"

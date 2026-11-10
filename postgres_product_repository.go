@@ -5,75 +5,49 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	sqlc "github.com/FranciscoCauaDeSa/inventory-api/db/sqlc"
 )
 
+// Check if PostgresProductRepository implements
+// every ProductRepository method
+var _ ProductRepository = (*PostgresProductRepository)(nil)
+
 type PostgresProductRepository struct {
-	db *pgxpool.Pool
+	queries *sqlc.Queries
 }
 
-func NewPostgresProductRepository(db *pgxpool.Pool) *PostgresProductRepository {
+func NewPostgresProductRepository(pool *pgxpool.Pool) *PostgresProductRepository {
 	return &PostgresProductRepository{
-		db: db,
+		queries: sqlc.New(pool),
 	}
 }
 
 func (r *PostgresProductRepository) List(ctx context.Context) ([]Product, error) {
-	query := `
-		SELECT id, name, description, price_cents, stock
-		FROM products
-		ORDER BY id
-	`
-
-	rows, err := r.db.Query(ctx, query)
+	rows, err := r.queries.ListProducts(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	products := make([]Product, 0)
 
-	for rows.Next() {
-		var product Product
-
-		err := rows.Scan(
-			&product.ID,
-			&product.Name,
-			&product.Description,
-			&product.PriceCents,
-			&product.Stock,
-		)
-
-		if err != nil {
-			return nil, err
-		}
-
-		products = append(products, product)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
+	for _, row := range rows {
+		products = append(products, Product{
+			ID:          row.ID,
+			Name:        row.Name,
+			Description: row.Description,
+			PriceCents:  row.PriceCents,
+			Stock:       row.Stock,
+		})
 	}
 
 	return products, nil
 }
 
 func (r *PostgresProductRepository) Get(ctx context.Context, id int64) (Product, error) {
-	query := `
-		SELECT id, name, description, price_cents, stock
-		FROM products
-		WHERE id = $1
-	`
-
-	var product Product
-
-	err := r.db.QueryRow(ctx, query, id).Scan(
-		&product.ID,
-		&product.Name,
-		&product.Description,
-		&product.PriceCents,
-		&product.Stock,
-	)
+	row, err := r.queries.GetProduct(ctx, id)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Product{}, ErrNotFound
@@ -83,70 +57,44 @@ func (r *PostgresProductRepository) Get(ctx context.Context, id int64) (Product,
 		return Product{}, err
 	}
 
-	return product, nil
+	return Product{
+		ID:          row.ID,
+		Name:        row.Name,
+		Description: row.Description,
+		PriceCents:  row.PriceCents,
+		Stock:       row.Stock,
+	}, nil
 }
 
 func (r *PostgresProductRepository) Create(ctx context.Context, product Product) (Product, error) {
-	query := `
-		INSERT INTO products (
-			name,
-			description,
-			price_cents,
-			stock
-		)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, name, description, price_cents, stock
-	`
-
-	err := r.db.QueryRow(
-		ctx,
-		query,
-		product.Name,
-		product.Description,
-		product.PriceCents,
-		product.Stock,
-	).Scan(
-		&product.ID,
-		&product.Name,
-		&product.Description,
-		&product.PriceCents,
-		&product.Stock,
-	)
+	row, err := r.queries.CreateProduct(ctx, sqlc.CreateProductParams{
+		Name:        product.Name,
+		Description: product.Description,
+		PriceCents:  product.PriceCents,
+		Stock:       product.Stock,
+	})
 
 	if err != nil {
 		return Product{}, err
 	}
 
-	return product, nil
+	return Product{
+		ID:          row.ID,
+		Name:        row.Name,
+		Description: row.Description,
+		PriceCents:  row.PriceCents,
+		Stock:       row.Stock,
+	}, nil
 }
 
 func (r *PostgresProductRepository) Update(ctx context.Context, id int64, product Product) (Product, error) {
-	query := `
-		UPDATE products
-		SET
-			name = $1,
-			description = $2,
-			price_cents = $3,
-			stock = $4
-		WHERE id = $5
-		RETURNING id, name, description, price_cents, stock
-	`
-
-	err := r.db.QueryRow(
-		ctx,
-		query,
-		product.Name,
-		product.Description,
-		product.PriceCents,
-		product.Stock,
-		id,
-	).Scan(
-		&product.ID,
-		&product.Name,
-		&product.Description,
-		&product.PriceCents,
-		&product.Stock,
-	)
+	row, err := r.queries.UpdateProduct(ctx, sqlc.UpdateProductParams{
+		ID:          id,
+		Name:        product.Name,
+		Description: product.Description,
+		PriceCents:  product.PriceCents,
+		Stock:       product.Stock,
+	})
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Product{}, ErrNotFound
@@ -156,24 +104,45 @@ func (r *PostgresProductRepository) Update(ctx context.Context, id int64, produc
 		return Product{}, err
 	}
 
-	return product, nil
+	return Product{
+		ID:          row.ID,
+		Name:        row.Name,
+		Description: row.Description,
+		PriceCents:  row.PriceCents,
+		Stock:       row.Stock,
+	}, nil
 }
 
 func (r *PostgresProductRepository) Delete(ctx context.Context, id int64) error {
-	query := `
-		DELETE
-		FROM products
-		WHERE id = $1
-	`
+	rowsAffected, err := r.queries.DeleteProduct(ctx, id)
 
-	tag, err := r.db.Exec(ctx, query, id)
 	if err != nil {
 		return err
 	}
 
-	if tag.RowsAffected() == 0 {
+	if rowsAffected == 0 {
 		return ErrNotFound
 	}
 
 	return nil
+}
+
+func toPGText(value *string) pgtype.Text {
+	if value == nil {
+		return pgtype.Text{}
+	}
+
+	return pgtype.Text{
+		String: *value,
+		Valid: true,
+	}
+}
+
+func fromPGText(value pgtype.Text) *string {
+	if !value.Valid {
+		return nil
+	}
+
+	result := value.String
+	return &result
 }
